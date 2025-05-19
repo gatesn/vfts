@@ -2868,9 +2868,11 @@ dependencies = [
  "anyhow",
  "clap",
  "futures-util",
+ "memmap2",
  "tantivy",
  "tokio",
  "vortex",
+ "vortex-buffer",
 ]
 
 [[package]]
@@ -2994,6 +2996,7 @@ version = "0.1.0"
 dependencies = [
  "arrow-buffer",
  "bytes",
+ "memmap2",
  "num-traits",
  "vortex-error",
 ]

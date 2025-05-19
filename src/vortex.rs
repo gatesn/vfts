@@ -1,9 +1,11 @@
 use std::collections::HashSet;
+use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::anyhow;
 use futures_util::{future, TryStreamExt};
+use memmap2::Mmap;
 use tokio::fs::OpenOptions;
 use tokio::runtime::Handle;
 use vortex::arrays::StructArray;
@@ -253,8 +255,8 @@ fn create_filter(
 }
 
 async fn vortex_file(path: &Path) -> anyhow::Result<(VortexFile, Arc<StructDType>)> {
-    let file = VortexOpenOptions::file()
-        .open(path)
+    let file = VortexOpenOptions::in_memory()
+        .open(unsafe { Mmap::map(&File::open(path)?)? })
         .await?;
 
     let dtype = file
