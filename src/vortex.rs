@@ -3,19 +3,18 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use futures_util::future;
+use futures_util::{future, TryStreamExt};
 use tokio::fs::OpenOptions;
-
-use vortex_array::arrays::StructArray;
-use vortex_array::builders::{ArrayBuilderExt, builder_with_capacity};
-use vortex_array::stream::ArrayStreamArrayExt;
-use vortex_array::validity::Validity;
-use vortex_array::{Array, ArrayRef};
-use vortex_dtype::{DType, Nullability, PType, StructDType};
-use vortex_expr::ExprRef;
-use vortex_file::{VortexFile, VortexOpenOptions, VortexWriteOptions};
-use vortex_io::TokioFile;
-
+use tokio::runtime::Handle;
+use vortex::arrays::StructArray;
+use vortex::builders::{ArrayBuilderExt, builder_with_capacity};
+use vortex::validity::Validity;
+use vortex::{expr, Array, ArrayRef};
+use vortex::dtype::{DType, Nullability, PType, StructDType};
+use vortex::expr::ExprRef;
+use vortex::file::{VortexFile, VortexOpenOptions, VortexWriteOptions};
+use vortex::file::scan::ScanBuilder;
+use vortex::layout::scan::SplitBy;
 use crate::vortex_list_expr::ListContainsExpr;
 
 const ID_COLUMN: &str = "::id::";
@@ -149,7 +148,7 @@ pub async fn vortex_index(path: &Path, buckets: u16) -> anyhow::Result<()> {
 
     let st = StructArray::try_new(field_names, fields, doc_count, Validity::NonNullable)?;
 
-    vortex_index_array(path, st.into_array()).await?;
+    vortex_index_array(path, st.to_array()).await?;
     println!(">>> created {path:?}, with {doc_count} documents in {bucket_count} buckets");
     Ok(())
 }
@@ -177,7 +176,7 @@ pub async fn vortex_search(path: &Path, query: &str) -> anyhow::Result<()> {
     let counts = future::try_join_all(
         file.scan()?
             .with_filter(filter)
-            .with_projection(vortex_expr::lit(true))
+            .with_projection(expr::lit(true))
             .map(|array| Ok(array.len()))
             .build()?,
     )
@@ -192,21 +191,29 @@ pub async fn vortex_search(path: &Path, query: &str) -> anyhow::Result<()> {
 pub async fn vortex_search_many(path: &Path) -> anyhow::Result<()> {
     let (file, dtype) = vortex_file(path).await?;
 
+    // It can be more efficient to reuse a single layout reader when scanning a file multiple
+    // times.
+    let layout_reader = file.layout_reader()?;
+
     let mut queries = 0;
     let mut matches = 0;
     for (_, doc) in crate::common::documents() {
         let filter = create_filter(&dtype, doc);
 
-        let counts = future::try_join_all(
-            file.scan()?
+        let count = ScanBuilder::new(layout_reader.clone())
                 .with_filter(filter)
-                .with_projection(vortex_expr::lit(true))
+                .with_projection(expr::lit(true))
+                .with_tokio_executor(Handle::current())
+                .with_split_by(SplitBy::RowCount(8192))
                 .map(|array| Ok(array.len()))
-                .build()?,
-        )
-        .await?;
+                .into_stream()?
+                .try_collect::<Vec<_>>()
+                .await?
+                .into_iter()
+                .sum::<usize>();
+
         queries += 1;
-        matches += counts.into_iter().map(|c| c.unwrap_or(0)).sum::<usize>();
+        matches += count;
     }
 
     println!(">>> {queries} queries matched {matches} docs");
@@ -235,19 +242,19 @@ fn create_filter(
                 Err(idx) => (idx - 1, BucketType::Multi),
             };
 
-            let get_item = vortex_expr::get_item(dtype.names()[idx].clone(), vortex_expr::ident());
+            let get_item = expr::get_item(dtype.names()[idx].clone(), expr::ident());
             match btype {
                 BucketType::Single => get_item,
                 BucketType::Multi => ListContainsExpr::new_expr(get_item, token.into()),
             }
         })
-        .reduce(vortex_expr::and)
-        .unwrap_or_else(|| vortex_expr::lit(false))
+        .reduce(expr::and)
+        .unwrap_or_else(|| expr::lit(false))
 }
 
 async fn vortex_file(path: &Path) -> anyhow::Result<(VortexFile, Arc<StructDType>)> {
     let file = VortexOpenOptions::file()
-        .open_read_at(TokioFile::open(path)?)
+        .open(path)
         .await?;
 
     let dtype = file

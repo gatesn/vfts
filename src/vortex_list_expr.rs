@@ -3,12 +3,12 @@ use std::fmt::Display;
 use std::hash::Hash;
 use std::sync::Arc;
 
-use vortex_array::compute;
-use vortex_array::{Array, ArrayRef};
-use vortex_dtype::{DType, Nullability};
-use vortex_error::VortexResult;
-use vortex_expr::{ExprRef, VortexExpr};
-use vortex_scalar::Scalar;
+use vortex::compute;
+use vortex::{Array, ArrayRef};
+use vortex::dtype::{DType, Nullability};
+use vortex::error::VortexResult;
+use vortex::expr::{ExprRef, VortexExpr};
+use vortex::scalar::Scalar;
 
 #[derive(Debug, Clone, Eq, Hash)]
 #[allow(clippy::derived_hash_with_manual_eq)]

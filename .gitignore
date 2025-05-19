@@ -1,2 +1,6 @@
 /target
 *.swp
+.idea
+
+*.vortex
+profile.json.gz
