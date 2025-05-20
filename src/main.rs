@@ -4,7 +4,7 @@ mod vortex;
 mod vortex_list_expr;
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Instant};
 
 use clap::{Parser, Subcommand};
 

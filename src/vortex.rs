@@ -1,22 +1,21 @@
 use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc};
 
 use anyhow::anyhow;
-use futures_util::{future, TryStreamExt};
+use futures_util::{future, stream, StreamExt, TryStreamExt};
 use memmap2::Mmap;
 use tokio::fs::OpenOptions;
-use tokio::runtime::Handle;
 use vortex::arrays::StructArray;
 use vortex::builders::{ArrayBuilderExt, builder_with_capacity};
 use vortex::validity::Validity;
 use vortex::{expr, Array, ArrayRef};
 use vortex::dtype::{DType, Nullability, PType, StructDType};
+use vortex::error::{VortexError};
 use vortex::expr::ExprRef;
 use vortex::file::{VortexFile, VortexOpenOptions, VortexWriteOptions};
-use vortex::file::scan::ScanBuilder;
-use vortex::layout::scan::SplitBy;
+use vortex::file::scan::{ScanBuilder};
 use crate::vortex_list_expr::ListContainsExpr;
 
 const ID_COLUMN: &str = "::id::";
@@ -199,24 +198,33 @@ pub async fn vortex_search_many(path: &Path) -> anyhow::Result<()> {
 
     let mut queries = 0;
     let mut matches = 0;
-    for (_, doc) in crate::common::documents() {
-        let filter = create_filter(&dtype, doc);
 
-        let count = ScanBuilder::new(layout_reader.clone())
-                .with_filter(filter)
-                .with_projection(expr::lit(true))
-                .with_tokio_executor(Handle::current())
-                .with_split_by(SplitBy::RowCount(8192))
-                .map(|array| Ok(array.len()))
-                .into_stream()?
-                .try_collect::<Vec<_>>()
-                .await?
-                .into_iter()
-                .sum::<usize>();
-
-        queries += 1;
-        matches += count;
-    }
+    stream::iter(crate::common::documents())
+        .then(move |(_, doc)| {
+            let dtype = dtype.clone();
+            let layout_reader = layout_reader.clone();
+            async move {
+                let filter = create_filter(&dtype, doc);
+                tokio::spawn(async move {
+                    Ok::<_, VortexError>(ScanBuilder::new(layout_reader.clone())
+                        .with_filter(filter)
+                        .with_projection(expr::lit(true))
+                        .map(|array| Ok(array.len()))
+                        .into_stream()?
+                        .try_collect::<Vec<_>>()
+                        .await?
+                        .into_iter()
+                        .sum::<usize>())
+                })
+            }
+        })
+        .buffer_unordered(32)
+        .try_for_each(|count| {
+            queries += 1;
+            matches += count.expect("Failed to count matches");
+            future::ready(Ok(()))
+        })
+        .await?;
 
     println!(">>> {queries} queries matched {matches} docs");
     Ok(())
